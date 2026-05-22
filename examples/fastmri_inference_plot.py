@@ -52,49 +52,51 @@ from mri_recon.utils import (
 )
 
 FASTMRI_REPORT_DIR = Path("reports") / "fastmri_inference_plot"
+FASTMRI_MULTICOIL_REPORT_DIR = Path("reports") / "fastmri_multicoil_inference_plot"
 OASIS_REPORT_DIR = Path("reports") / "oasis_inference_plot"
 FASTMRI_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+FASTMRI_MULTICOIL_REPORT_DIR.mkdir(parents=True, exist_ok=True)
 OASIS_REPORT_DIR.mkdir(parents=True, exist_ok=True)
 ALGORITHMS = [
-    "zero-filled",
-    # "conjugate-gradient",
+    # "zero-filled",
+    "conjugate-gradient",
     # "ram",
     # "dip",
-    "tv-pgd",
+    # "tv-pgd",
     # "wavelet-fista",
-    "tv-fista",
+    # "tv-fista",
     # "tv-pdhg",
-    *list(EXPLICIT_UNET_ALGORITHMS),
+    # *list(EXPLICIT_UNET_ALGORITHMS),
 ]
 
 DISTORTIONS = [
     "Cartesian undersampling (variable density)",
-    "Cartesian undersampling (uniform random)",
-    "Cartesian undersampling (uniform random, zero ACS)",
-    "Cartesian undersampling (equispaced)",
-    "Cartesian undersampling (equispaced, zero ACS)",
-    "Partial Fourier",
-    "Phase-encode ghosting",
-    "Segmented translation motion",
-    "Segmented rotational motion",
-    "Translation motion",
-    "Rotational motion",
-    "Off-center anisotropic Gaussian bias field",
-    "Gaussian bias field",
-    "Anisotropic LP",
-    "Hann taper LP",
-    "Kaiser taper LP",
-    "Gaussian noise",
-    "Isotropic LP",
-    "Radial high-pass emphasis",
+    # "Cartesian undersampling (uniform random)",
+    # "Cartesian undersampling (uniform random, zero ACS)",
+    # "Cartesian undersampling (equispaced)",
+    # "Cartesian undersampling (equispaced, zero ACS)",
+    # "Partial Fourier",
+    # "Phase-encode ghosting",
+    # "Segmented translation motion",
+    # "Segmented rotational motion",
+    # "Translation motion",
+    # "Rotational motion",
+    # "Off-center anisotropic Gaussian bias field",
+    # "Gaussian bias field",
+    # "Anisotropic LP",
+    # "Hann taper LP",
+    # "Kaiser taper LP",
+    # "Gaussian noise",
+    # "Isotropic LP",
+    # "Radial high-pass emphasis",
 ]
 METRICS = [
     "PSNR",
-    "NMSE",
-    "SSIM",
-    "HaarPSI",
-    "SharpnessIndex",
-    "BlurStrength",
+    # "NMSE",
+    # "SSIM",
+    # "HaarPSI",
+    # "SharpnessIndex",
+    # "BlurStrength",
 ]
 
 
@@ -248,16 +250,22 @@ def prepare_measurement_sample(
     """
 
     if dataset_name == "oasis":
-        reference_image = sample_batch["x"].to(run_device)
-        return reference_image, image_to_kspace(reference_image)
-
-    # FastMRI batches are tuples such as (x, y) or (x, y, params).
-    y_fastmri = sample_batch[1].to(run_device)
-    if use_oasis_fft_path:
-        reference_image = fastmri_measurement_to_image(y_fastmri, device=run_device)
-        return reference_image, fastmri_measurement_to_oasis_kspace(y_fastmri, device=run_device)
-
-    return None, y_fastmri
+        x = sample_batch["x"].to(run_device)
+        y = image_to_kspace(x)
+        coil_maps = None
+    elif dataset_name in ("fastmri",) and use_oasis_fft_path:
+        y = sample_batch[1].to(run_device)
+        x = fastmri_measurement_to_image(y)
+        y = fastmri_measurement_to_oasis_kspace(y, device=run_device)
+        coil_maps = None
+    elif dataset_name == "fastmri_multicoil" and use_oasis_fft_path:
+        raise NotImplementedError("TODO allow use_oasis_fft_path to take fastmri_multicoil dataset")
+    elif dataset_name in ("fastmri", "fastmri_multicoil"):
+        x = None
+        y = sample_batch[1].to(run_device)
+        coil_maps = sample_batch[2]["coil_maps"].to(run_device) if isinstance(sample_batch, (tuple, list)) and len(sample_batch) == 3 and "coil_maps" in sample_batch[2] else None
+    
+    return x, y, coil_maps
 
 
 def build_physics_pair(
@@ -265,6 +273,7 @@ def build_physics_pair(
     distortion_operator: BaseDistortion,
     run_device: torch.device | str,
     use_oasis_fft_path: bool,
+    coil_maps: torch.Tensor | None = None,
 ) -> tuple[object, object]:
     """Build clean and distorted physics operators for the active path."""
 
@@ -276,11 +285,13 @@ def build_physics_pair(
     clean_physics = DistortedKspaceMultiCoilMRI(
         distortion=BaseDistortion(),
         img_size=(1, 2, *image_shape),
+        coil_maps=coil_maps,
         device=run_device,
     )
     distorted_physics = DistortedKspaceMultiCoilMRI(
         distortion=distortion_operator,
         img_size=(1, 2, *image_shape),
+        coil_maps=coil_maps,
         device=run_device,
     )
     return clean_physics, distorted_physics
@@ -295,7 +306,7 @@ if __name__ == "__main__":
         type=Path,
         help="Local FastMRI directory with raw k-space .h5 files or OASIS root directory.",
     )
-    parser.add_argument("--dataset", choices=("fastmri", "oasis"), default="fastmri")
+    parser.add_argument("--dataset", choices=("fastmri", "oasis", "fastmri_multicoil"), default="fastmri")
 
     parser.add_argument("--distortion", type=str, default="", choices=DISTORTIONS)
     parser.add_argument(
@@ -334,7 +345,14 @@ if __name__ == "__main__":
         validate_algorithm_dataset_compatibility(args.dataset, algo_name)
 
     # set up report dir
-    REPORT_DIR = OASIS_REPORT_DIR if args.dataset == "oasis" else FASTMRI_REPORT_DIR
+    if args.dataset == "fastmri":
+        REPORT_DIR = FASTMRI_REPORT_DIR
+    elif args.dataset == "oasis":
+        REPORT_DIR = OASIS_REPORT_DIR
+    elif args.dataset == "fastmri_multicoil":
+        REPORT_DIR = FASTMRI_MULTICOIL_REPORT_DIR
+    else:
+        raise NotImplementedError(f"Invalid dataset: {args.dataset}")
 
     # set up device, dataset, metrics
     device = dinv.utils.get_device()
@@ -345,8 +363,12 @@ if __name__ == "__main__":
             split_csv=split_csv,
             sample_rate=0.6,
         )
-    else:
+    elif args.dataset == "fastmri":
         dataset = dinv.datasets.FastMRISliceDataset(str(args.source), slice_index="middle")
+    elif args.dataset == "fastmri_multicoil":
+        dataset = dinv.datasets.FastMRISliceDataset(str(args.source), slice_index="middle", transform=dinv.datasets.MRISliceTransform(estimate_coil_maps=True, acs=15,),)
+    else:
+        raise NotImplementedError(f"Invalid dataset: {args.dataset}")
     metrics = [choose_metric(m) for m in METRICS]
 
     for i, batch in enumerate(iter(torch.utils.data.DataLoader(dataset))):
@@ -356,7 +378,7 @@ if __name__ == "__main__":
 
         for algo_name in selected_algorithms:
             use_oasis_path = uses_oasis_centered_path(args.dataset, algo_name)
-            x_reference, y = prepare_measurement_sample(
+            x_reference, y, coil_maps = prepare_measurement_sample(
                 sample_batch=batch,
                 dataset_name=args.dataset,
                 use_oasis_fft_path=use_oasis_path,
@@ -383,6 +405,7 @@ if __name__ == "__main__":
                     distortion_operator=distortion,
                     run_device=device,
                     use_oasis_fft_path=use_oasis_path,
+                    coil_maps=coil_maps,
                 )
                 y_distorted = distortion.A(y)
 
