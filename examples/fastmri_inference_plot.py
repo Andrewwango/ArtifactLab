@@ -54,9 +54,11 @@ from mri_recon.utils import (
 FASTMRI_REPORT_DIR = Path("reports") / "fastmri_inference_plot"
 FASTMRI_MULTICOIL_REPORT_DIR = Path("reports") / "fastmri_multicoil_inference_plot"
 OASIS_REPORT_DIR = Path("reports") / "oasis_inference_plot"
+CMRXRECON_REPORT_DIR = Path("reports") / "cmrxrecon_inference_plot"
 FASTMRI_REPORT_DIR.mkdir(parents=True, exist_ok=True)
 FASTMRI_MULTICOIL_REPORT_DIR.mkdir(parents=True, exist_ok=True)
 OASIS_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+CMRXRECON_REPORT_DIR.mkdir(parents=True, exist_ok=True)
 ALGORITHMS = [
     # "zero-filled",
     "conjugate-gradient",
@@ -264,7 +266,11 @@ def prepare_measurement_sample(
         x = None
         y = sample_batch[1].to(run_device)
         coil_maps = sample_batch[2]["coil_maps"].to(run_device) if isinstance(sample_batch, (tuple, list)) and len(sample_batch) == 3 and "coil_maps" in sample_batch[2] else None
-    
+    elif dataset_name in ("cmrxrecon"):
+        x = sample_batch[0].to(run_device)
+        y = sample_batch[1].to(run_device)
+        coil_maps = sample_batch[2]["coil_maps"].to(run_device) if isinstance(sample_batch, (tuple, list)) and len(sample_batch) == 3 and "coil_maps" in sample_batch[2] else None
+
     return x, y, coil_maps
 
 
@@ -306,7 +312,7 @@ if __name__ == "__main__":
         type=Path,
         help="Local FastMRI directory with raw k-space .h5 files or OASIS root directory.",
     )
-    parser.add_argument("--dataset", choices=("fastmri", "oasis", "fastmri_multicoil"), default="fastmri")
+    parser.add_argument("--dataset", choices=("fastmri", "oasis", "fastmri_multicoil", "cmrxrecon"), default="fastmri")
 
     parser.add_argument("--distortion", type=str, default="", choices=DISTORTIONS)
     parser.add_argument(
@@ -351,6 +357,8 @@ if __name__ == "__main__":
         REPORT_DIR = OASIS_REPORT_DIR
     elif args.dataset == "fastmri_multicoil":
         REPORT_DIR = FASTMRI_MULTICOIL_REPORT_DIR
+    elif args.dataset == "cmrxrecon":
+        REPORT_DIR = CMRXRECON_REPORT_DIR
     else:
         raise NotImplementedError(f"Invalid dataset: {args.dataset}")
 
@@ -367,6 +375,8 @@ if __name__ == "__main__":
         dataset = dinv.datasets.FastMRISliceDataset(str(args.source), slice_index="middle")
     elif args.dataset == "fastmri_multicoil":
         dataset = dinv.datasets.FastMRISliceDataset(str(args.source), slice_index="middle", transform=dinv.datasets.MRISliceTransform(estimate_coil_maps=True, acs=15,),)
+    elif args.dataset == "cmrxrecon":
+        dataset = dinv.datasets.CMRxReconSliceDataset(str(args.source), data_dir="SingleCoil/Cine/TrainingSet/FullSample", apply_mask=False)
     else:
         raise NotImplementedError(f"Invalid dataset: {args.dataset}")
     metrics = [choose_metric(m) for m in METRICS]
