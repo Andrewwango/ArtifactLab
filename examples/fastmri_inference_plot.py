@@ -72,6 +72,7 @@ ALGORITHMS = [
 ]
 
 DISTORTIONS = [
+    "no distortion",
     # "Cartesian undersampling (variable density)",
     # "Cartesian undersampling (uniform random)",
     # "Cartesian undersampling (uniform random, zero ACS)",
@@ -215,6 +216,8 @@ def choose_distortion(
             return GaussianKspaceBiasField(width_fraction=0.35, edge_gain=0.4)
         case "Gaussian noise":
             return GaussianNoiseDistortion(sigma=0.00001)
+        case "no distortion":
+            return BaseDistortion()
         case _:
             raise ValueError(f"Unknown distortion {name!r}")
 
