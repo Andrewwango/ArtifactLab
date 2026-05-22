@@ -13,9 +13,9 @@ def _kspace_to_log_magnitude(kspace: torch.Tensor) -> torch.Tensor:
     NOTE: for multicoil, just plot the first coil data.
     """
 
-    if kspace.ndim == 5: # multicoil
+    if kspace.ndim == 5:  # multicoil
         kspace = kspace[:, :, 0]
-    if kspace.ndim == 4: # batched
+    if kspace.ndim == 4:  # batched
         kspace = kspace[0]
     if kspace.ndim != 3 or kspace.shape[0] != 2:
         raise ValueError(
