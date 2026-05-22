@@ -39,6 +39,7 @@ from mri_recon.reconstruction import (
     choose_reconstructor,
     uses_oasis_centered_path,
     validate_algorithm_dataset_compatibility,
+    EXPLICIT_UNET_ALGORITHMS,
 )
 from mri_recon.utils import (
     OasisCenteredFFTPhysics,
@@ -67,15 +68,15 @@ ALGORITHMS = [
     # "wavelet-fista",
     # "tv-fista",
     # "tv-pdhg",
-    # *list(EXPLICIT_UNET_ALGORITHMS),
+    *list(EXPLICIT_UNET_ALGORITHMS),
 ]
 
 DISTORTIONS = [
-    "Cartesian undersampling (variable density)",
+    # "Cartesian undersampling (variable density)",
     # "Cartesian undersampling (uniform random)",
     # "Cartesian undersampling (uniform random, zero ACS)",
     # "Cartesian undersampling (equispaced)",
-    # "Cartesian undersampling (equispaced, zero ACS)",
+    "Cartesian undersampling (equispaced, zero ACS)",
     # "Partial Fourier",
     # "Phase-encode ghosting",
     # "Segmented translation motion",
@@ -260,7 +261,17 @@ def prepare_measurement_sample(
         y = fastmri_measurement_to_oasis_kspace(y, device=run_device)
         coil_maps = None
     elif dataset_name == "fastmri_multicoil" and use_oasis_fft_path:
-        raise NotImplementedError("TODO allow use_oasis_fft_path to take fastmri_multicoil dataset")
+        y = sample_batch[1].to(run_device)
+
+        coil_maps = (
+            sample_batch[2]["coil_maps"].to(run_device)
+            if isinstance(sample_batch, (tuple, list))
+            and len(sample_batch) == 3
+            and "coil_maps" in sample_batch[2]
+            else None
+        )
+        x = fastmri_measurement_to_image(y, coil_maps=coil_maps)
+        y = fastmri_measurement_to_oasis_kspace(y, coil_maps=coil_maps, device=run_device)
     elif dataset_name in ("fastmri", "fastmri_multicoil"):
         x = None
         y = sample_batch[1].to(run_device)
@@ -411,84 +422,91 @@ if __name__ == "__main__":
             break
 
         for algo_name in selected_algorithms:
-            use_oasis_path = uses_oasis_centered_path(args.dataset, algo_name)
-            x_reference, y, coil_maps = prepare_measurement_sample(
-                sample_batch=batch,
-                dataset_name=args.dataset,
-                use_oasis_fft_path=use_oasis_path,
-                run_device=device,
-            )
-            algo = choose_reconstructor(
-                algo_name,
-                img_size=y.shape[-2:],
-                device=device,
-                verbose=args.verbose,
-                dataset=args.dataset,
-            ).to(device)
-
-            for distortion_name in selected_distortions:
-                distortion = choose_distortion(
-                    distortion_name,
-                    keep_fraction=args.keep_fraction,
-                    center_fraction=args.center_fraction,
-                    cartesian_axis=-1 if use_oasis_path else -2,
-                )
-
-                physics_clean, physics = build_physics_pair(
-                    image_shape=y.shape[-2:],
-                    distortion_operator=distortion,
-                    run_device=device,
+            try:
+                use_oasis_path = uses_oasis_centered_path(args.dataset, algo_name)
+                x_reference, y, coil_maps = prepare_measurement_sample(
+                    sample_batch=batch,
+                    dataset_name=args.dataset,
                     use_oasis_fft_path=use_oasis_path,
-                    coil_maps=coil_maps,
+                    run_device=device,
                 )
-                y_distorted = distortion.A(y)
+                algo = choose_reconstructor(
+                    algo_name,
+                    img_size=y.shape[-2:],
+                    device=device,
+                    verbose=args.verbose,
+                    dataset=args.dataset,
+                ).to(device)
 
-                # generate reference reconstructions (CG) for both clean and distorted k-space
-                # without correction for the distortion, i.e. using physics_clean in both cases
-                if use_oasis_path:
-                    x_clean = x_reference
-                    x_distorted = kspace_to_image(y_distorted)
-                else:
-                    x_clean = ConjugateGradientReconstructor()(y, physics_clean)
-                    x_distorted = ConjugateGradientReconstructor()(y_distorted, physics_clean)
+                for distortion_name in selected_distortions:
+                    distortion = choose_distortion(
+                        distortion_name,
+                        keep_fraction=args.keep_fraction,
+                        center_fraction=args.center_fraction,
+                        cartesian_axis=-1 if use_oasis_path else -2,
+                    )
 
-                save_kspace_plot(
-                    y,
-                    y_distorted,
-                    REPORT_DIR / f"DISTORTION_{algo_name}_{distortion_name}_sample_{i}.png",
-                    distortion_name,
-                )
+                    physics_clean, physics = build_physics_pair(
+                        image_shape=y.shape[-2:],
+                        distortion_operator=distortion,
+                        run_device=device,
+                        use_oasis_fft_path=use_oasis_path,
+                        coil_maps=coil_maps,
+                    )
+                    y_distorted = distortion.A(y)
 
-                print(f"Evaluating algo {algo_name}, distortion {distortion_name}, sample {i}...")
+                    # generate reference reconstructions (CG) for both clean and distorted k-space
+                    # without correction for the distortion, i.e. using physics_clean in both cases
+                    if use_oasis_path:
+                        x_clean = x_reference
+                        x_distorted = kspace_to_image(y_distorted)
+                    else:
+                        x_clean = ConjugateGradientReconstructor()(y, physics_clean)
+                        x_distorted = ConjugateGradientReconstructor()(y_distorted, physics_clean)
 
-                # actual reconstruction with the algo being evaluated
-                x_uncorrected = algo(y_distorted, physics_clean)
-                x_corrected = algo(y_distorted, physics)
+                    save_kspace_plot(
+                        y,
+                        y_distorted,
+                        REPORT_DIR / f"DISTORTION_{algo_name}_{distortion_name}_sample_{i}.png",
+                        distortion_name,
+                    )
 
-                print("done!")
+                    print(
+                        f"Evaluating algo {algo_name}, distortion {distortion_name}, sample {i}..."
+                    )
 
-                dinv.utils.plot(
-                    {
-                        "Undistorted ksp, CG recon": x_clean,
-                        "Distorted ksp, CG recon": x_distorted,
-                        f"Distorted ksp, {algo_name} recon, uncorrected": x_uncorrected,
-                        f"Distorted ksp, {algo_name} recon, corrected": x_corrected,
-                    },
-                    subtitles=[
-                        "",
-                        "",
-                        "\n".join(
-                            f"{m.__class__.__name__} {m(x_uncorrected, x_clean).item():.2f}"
-                            for m in metrics
-                        ),
-                        "\n".join(
-                            f"{m.__class__.__name__} {m(x_corrected, x_clean).item():.2f}"
-                            for m in metrics
-                        ),
-                    ],
-                    show=False,
-                    close=True,
-                    suptitle=f"Algo {algo_name}, distortion {distortion_name}, Sample {i}",
-                    save_fn=REPORT_DIR / f"ALGO_{algo_name}_{distortion_name}_sample_{i}.png",
-                    fontsize=3,
+                    # actual reconstruction with the algo being evaluated
+                    x_uncorrected = algo(y_distorted, physics_clean)
+                    x_corrected = algo(y_distorted, physics)
+
+                    print("done!")
+
+                    dinv.utils.plot(
+                        {
+                            "Undistorted ksp, CG recon": x_clean,
+                            "Distorted ksp, CG recon": x_distorted,
+                            f"Distorted ksp, {algo_name} recon, uncorrected": x_uncorrected,
+                            f"Distorted ksp, {algo_name} recon, corrected": x_corrected,
+                        },
+                        subtitles=[
+                            "",
+                            "",
+                            "\n".join(
+                                f"{m.__class__.__name__} {m(x_uncorrected, x_clean).item():.2f}"
+                                for m in metrics
+                            ),
+                            "\n".join(
+                                f"{m.__class__.__name__} {m(x_corrected, x_clean).item():.2f}"
+                                for m in metrics
+                            ),
+                        ],
+                        show=False,
+                        close=True,
+                        suptitle=f"Algo {algo_name}, distortion {distortion_name}, Sample {i}",
+                        save_fn=REPORT_DIR / f"ALGO_{algo_name}_{distortion_name}_sample_{i}.png",
+                        fontsize=3,
+                    )
+            except Exception as e:
+                print(
+                    f"Error processing algo {algo_name}, distortion {distortion_name}, sample {i}: {e}"
                 )
